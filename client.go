@@ -15,13 +15,16 @@ import (
 
 type client struct {
 	*s3.S3
+	endpoint  string
+	accessKey string
+	accessID  string
 }
 
-func NewClient(endpoint, accessID, accessKey, token string) (Client, error) {
+func NewClient(endpoint, accessID, accessKey string) (Client, error) {
 	S3Config := &aws.Config{
-		Credentials:      credentials.NewStaticCredentials(accessID, accessKey, token),
+		Credentials:      credentials.NewStaticCredentials(accessID, accessKey, ""),
 		Endpoint:         aws.String(endpoint),
-		Region:           aws.String("us-east-1"),
+		Region:           aws.String("us-east-1"), //us-east-1
 		DisableSSL:       aws.Bool(true),
 		S3ForcePathStyle: aws.Bool(true),
 	}
@@ -30,7 +33,12 @@ func NewClient(endpoint, accessID, accessKey, token string) (Client, error) {
 		return nil, err
 	}
 
-	return &client{s3.New(newSession)}, err
+	return &client{
+		S3:        s3.New(newSession),
+		endpoint:  endpoint,
+		accessKey: accessKey,
+		accessID:  accessID,
+	}, err
 }
 
 func (self *client) PutFile(file io.ReadSeeker, bucketStr string, keyStr string, contentType string, timeout time.Duration) (filename string, err error) {
@@ -44,15 +52,14 @@ func (self *client) PutFile(file io.ReadSeeker, bucketStr string, keyStr string,
 		defer cancelFn()
 	}
 
-	var out *s3.PutObjectOutput
 	if contentType == "" {
-		out, err = self.S3.PutObjectWithContext(ctx, &s3.PutObjectInput{
+		_, err = self.S3.PutObjectWithContext(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(bucketStr),
 			Key:    aws.String(keyStr),
 			Body:   file,
 		})
 	} else {
-		out, err = self.S3.PutObjectWithContext(ctx, &s3.PutObjectInput{
+		_, err = self.S3.PutObjectWithContext(ctx, &s3.PutObjectInput{
 			Bucket:      aws.String(bucketStr),
 			Key:         aws.String(keyStr),
 			ContentType: aws.String(contentType),
@@ -67,10 +74,10 @@ func (self *client) PutFile(file io.ReadSeeker, bucketStr string, keyStr string,
 		return "", err
 	}
 
-	return out.String(), nil
+	return fmt.Sprintf("%s/%s/%s", self.endpoint, bucketStr, keyStr), nil
 }
 
-func (self *client) GetFile(bucketStr string, keyStr string, timeout time.Duration) (filename string, err error) {
+func (self *client) GetFile(bucketStr string, keyStr string, timeout time.Duration) (ret []byte, err error) {
 	ctx := context.Background()
 	var cancelFn func()
 	if timeout > 0 {
@@ -88,10 +95,45 @@ func (self *client) GetFile(bucketStr string, keyStr string, timeout time.Durati
 
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
-			return "", fmt.Errorf("upload canceled due to timeout, %v\n", err)
+			return nil, fmt.Errorf("upload canceled due to timeout, %v\n", err)
 		}
-		return "", err
+		return nil, err
 	}
 
-	return out.String(), nil
+	defer out.Body.Close()
+
+	b, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+func (self *client) ListFile(bucketStr string, timeout time.Duration) (ret []string, err error) {
+	ctx := context.Background()
+	var cancelFn func()
+	if timeout > 0 {
+		ctx, cancelFn = context.WithTimeout(ctx, timeout)
+	}
+
+	if cancelFn != nil {
+		defer cancelFn()
+	}
+
+	ret = []string{}
+	err = self.S3.ListObjectsPagesWithContext(ctx, &s3.ListObjectsInput{
+		Bucket: aws.String(bucketStr),
+	}, func(p *s3.ListObjectsOutput, b bool) bool {
+		for _, o := range p.Contents {
+			ret = append(ret, aws.StringValue(o.Key))
+		}
+		return true
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return ret, nil
 }
