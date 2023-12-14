@@ -1,4 +1,4 @@
-module github.com/any-call/myminio
+module gitee.com/any-call/myminio
 
 go 1.20
 
